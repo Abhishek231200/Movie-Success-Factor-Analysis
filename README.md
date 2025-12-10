@@ -28,7 +28,7 @@ Open R and execute the main analysis script:
 
 ```R
 # Run from project root directory
-source("src/movie_analysis_qmd.qmd")
+source("src/movie_analysis.qmd")
 ```
 
 **Expected runtime:** 5-10 minutes
