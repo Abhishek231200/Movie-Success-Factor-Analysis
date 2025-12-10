@@ -1,0 +1,16 @@
+Genre,N_Movies,Mean_Rating,Dual_Success_Rate,Financial_Success,Critical_Success
+Documentary,2346,7.16,91.9,100,91.9
+Biography,1942,6.89,85.8,100,85.8
+Animation,1283,6.54,69.8,100,69.8
+Drama,18455,6.37,64.6,100,64.6
+Romance,5266,6.23,58,100,58
+Crime,5127,6.18,56.5,100,56.5
+Comedy,10986,6,49.5,100,49.5
+Adventure,3235,5.97,49.5,100,49.5
+Family,1281,6.03,49.3,100,49.3
+Action,6333,5.83,44.9,100,44.9
+Fantasy,1699,5.79,42.5,100,42.5
+Mystery,2981,5.81,41.1,100,41.1
+Thriller,5717,5.7,38.5,100,38.5
+Sci-Fi,1469,5.39,30.2,100,30.2
+Horror,4395,5.06,17.6,100,17.6

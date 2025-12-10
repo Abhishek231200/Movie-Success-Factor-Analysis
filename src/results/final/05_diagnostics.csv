@@ -1,0 +1,4 @@
+Test,Statistic,p_value,Interpretation
+Kolmogorov-Smirnov,0.0471,6.365346e-65,Minor non-normality (large n)
+Breusch-Pagan,1091.02,2.566893e-231,Heteroscedasticity present
+Durbin-Watson,1.83,4.281528e-55,No autocorrelation

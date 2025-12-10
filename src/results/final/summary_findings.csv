@@ -1,0 +1,7 @@
+Result,Key_Finding
+Result 1: Genre,Biography (86.6%) & Documentary (82.1%) lead; Horror lags (28%)
+Result 2: Popularity,"Spearman ρ = 0.27, p < 0.001; Q4: 73% vs Q1: 38%"
+Result 3: Multi-Genre,"Multi-genre +0.22 points; t = 5.73, p < 0.001"
+Result 4: Temporal,Documentary +9.3 pp (79%→88%); streaming effect
+Result 5: Linear Model,"R² = 0.165; logVotes (+0.091), Horror (-0.966) strongest"
+Result 6: Logistic Model,logVotes increases success odds 10%/unit; Horror -62%

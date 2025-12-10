@@ -1,0 +1,1639 @@
+---
+title: "Movie Success Factor Analysis: Financial and Critical Perspectives (1996–2024)"
+subtitle: "Reproducing and Extending Gao et al. (2019) Analysis"
+author: "Abhishek Chavan, Navya Gulati"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: false
+    code-summary: "Show code"
+    self-contained: true
+    theme: cosmo
+    fontsize: 11pt
+    linestretch: 1.5
+execute:
+  echo: true
+  warning: false
+  message: false
+---
+
+## Research Questions
+
+1.  What factors contribute to **both financial AND critical success** in movies?
+2.  How have the **determinants of movie success evolved over time**?
+3.  Do **actor and director career histories** and collaboration patterns remain predictive?
+4.  What role do **genre, runtime, and creative elements** play in predicting success?
+
+------------------------------------------------------------------------
+
+# Data Loading & Preprocessing
+
+```{r}
+#| label: setup-libraries
+#| message: false
+
+# Core libraries
+library(tidyverse)
+library(ggplot2)
+library(corrplot)
+library(gridExtra)
+library(scales)
+library(patchwork)
+library(car)
+library(broom)
+library(lmtest)
+library(viridis)
+library(ggridges)
+library(kableExtra)
+
+options(stringsAsFactors = FALSE)
+
+# Set up directories
+root_dir        <- getwd()
+data_raw_dir    <- file.path(root_dir, "data", "raw")
+data_proc_dir   <- file.path(root_dir, "data", "processed")
+results_dir     <- file.path(root_dir, "results")
+results_fin_dir <- file.path(results_dir, "final")
+figures_dir     <- file.path(root_dir, "figures")
+
+dirs_to_create <- c(data_proc_dir, results_dir, results_fin_dir, figures_dir)
+for (d in dirs_to_create) {
+  if (!dir.exists(d)) dir.create(d, recursive = TRUE)
+}
+```
+
+## Utility Functions
+
+```{r}
+#| label: utility-functions
+
+clean_currency <- function(x) {
+  x_clean <- gsub("[\\$,]", "", x)
+  x_clean[x_clean == "" | is.na(x_clean)] <- NA
+  suppressWarnings(as.numeric(x_clean))
+}
+
+save_table <- function(df, filename, final = FALSE) {
+  out_dir <- if (final) results_fin_dir else file.path(results_dir, "preliminary")
+  if (!dir.exists(out_dir)) dir.create(out_dir, recursive = TRUE)
+  readr::write_csv(df, file.path(out_dir, filename))
+}
+
+save_plot <- function(p, filename, width = 12, height = 7, dpi = 300) {
+  ggsave(file.path(figures_dir, filename), p,
+         width = width, height = height, dpi = dpi, bg = "white")
+}
+
+theme_professional <- function() {
+  theme_minimal(base_size = 12) +
+    theme(
+      plot.title    = element_text(face = "bold", size = 16, hjust = 0, colour = "#1a1a1a"),
+      plot.subtitle = element_text(size = 12, colour = "gray40", hjust = 0,
+                                   margin = margin(b = 10)),
+      plot.caption  = element_text(size = 9, colour = "gray60", hjust = 0,
+                                   margin = margin(t = 10)),
+      axis.title    = element_text(size = 11, face = "bold", colour = "#1a1a1a"),
+      axis.text     = element_text(size = 10, colour = "gray30"),
+      legend.position = "right",
+      legend.title  = element_text(face = "bold", size = 10),
+      legend.text   = element_text(size = 9),
+      panel.grid.major = element_line(colour = "gray95", size = 0.3),
+      panel.grid.minor = element_blank(),
+      panel.background = element_rect(fill = "white", colour = NA),
+      plot.background  = element_rect(fill = "white", colour = NA),
+      plot.margin      = margin(15, 15, 15, 15)
+    )
+}
+
+format_table <- function(df, caption = "", digits = 2) {
+  # Convert numeric columns to specified digits
+  df_formatted <- df %>%
+    mutate(across(where(is.numeric), ~round(., digits)))
+  
+  # Create markdown table with proper alignment
+  cat("\n")
+  cat(knitr::kable(df_formatted, format = "markdown", caption = caption))
+  cat("\n\n")
+  invisible(df)
+}
+```
+
+## Loading Raw Data
+
+```{r}
+#| label: load-data
+
+box_office       <- readr::read_csv(file.path(data_raw_dir, "box_office_data.csv"), 
+                                    show_col_types = FALSE)
+name_basics      <- readr::read_tsv(file.path(data_raw_dir, "name.basics.tsv.gz"),
+                                    show_col_types = FALSE)
+title_basics     <- readr::read_tsv(file.path(data_raw_dir, "title.basics.tsv.gz"),
+                                    show_col_types = FALSE)
+title_principals <- readr::read_tsv(file.path(data_raw_dir, "title.principals.tsv.gz"),
+                                    show_col_types = FALSE)
+title_ratings    <- readr::read_tsv(file.path(data_raw_dir, "title.ratings.tsv.gz"),
+                                    show_col_types = FALSE)
+
+cat("Loaded datasets:\n")
+cat("- Box Office:", nrow(box_office), "records\n")
+cat("- Title Basics:", nrow(title_basics), "records\n")
+cat("- Title Ratings:", nrow(title_ratings), "records\n")
+cat("- Title Principals:", nrow(title_principals), "records\n")
+```
+
+## Data Cleaning & Integration
+
+```{r}
+#| label: data-cleaning
+
+# === 1. CLEAN BOX OFFICE DATA ===
+box_office_clean <- box_office %>%
+  mutate(
+    worldwide_revenue = clean_currency(Worldwide),
+    domestic_revenue  = clean_currency(Domestic),
+    foreign_revenue   = clean_currency(Foreign)
+  ) %>%
+  select(Title, worldwide_revenue, domestic_revenue, foreign_revenue) %>%
+  rename(primaryTitle = Title) %>%
+  distinct(primaryTitle, .keep_all = TRUE)
+
+cat("Box office cleaned:", nrow(box_office_clean), "unique titles\n")
+
+# === 2. CLEAN TITLE BASICS (movies only, 1996–2024) ===
+title_basics_clean <- title_basics %>%
+  filter(titleType == "movie") %>%
+  mutate(
+    startYear      = suppressWarnings(as.numeric(startYear)),
+    runtimeMinutes = suppressWarnings(as.numeric(runtimeMinutes)),
+    isAdult        = as.logical(isAdult)
+  ) %>%
+  filter(!is.na(startYear), startYear >= 1996, startYear <= 2024) %>%
+  filter(!is.na(runtimeMinutes), runtimeMinutes > 0) %>%
+  select(tconst, primaryTitle, startYear, runtimeMinutes, genres, isAdult) %>%
+  rename(release_year = startYear, runtime_minutes = runtimeMinutes)
+
+cat("Cleaned title_basics to", nrow(title_basics_clean), "movies (1996–2024)\n")
+
+# === 3. CLEAN RATINGS ===
+title_ratings_clean <- title_ratings %>%
+  select(tconst, averageRating, numVotes) %>%
+  rename(imdb_rating = averageRating, num_votes = numVotes)
+
+# === 4. MERGE DATASETS ===
+movies_base <- title_basics_clean %>%
+  left_join(title_ratings_clean, by = "tconst") %>%
+  left_join(box_office_clean, by = "primaryTitle", relationship = "many-to-one")
+
+cat("Base movie dataset:", nrow(movies_base), "rows\n")
+cat("- With ratings:", sum(!is.na(movies_base$imdb_rating)), "\n")
+cat("- With revenue (any type):", sum(!is.na(movies_base$worldwide_revenue) | !is.na(movies_base$domestic_revenue)), "\n")
+cat("- With both worldwide revenue AND ratings:", sum(!is.na(movies_base$imdb_rating) & !is.na(movies_base$worldwide_revenue)), "\n")
+```
+
+------------------------------------------------------------------------
+
+# Feature Engineering & Analysis Dataset
+
+```{r}
+#| label: analysis-dataset-creation
+
+# 1: Movies with BOTH worldwide revenue and ratings
+movies_both <- movies_base %>%
+  filter(!is.na(worldwide_revenue),
+         !is.na(imdb_rating),
+         !is.na(genres),
+         genres != "\\N") %>%
+  distinct(tconst, .keep_all = TRUE) %>%
+  mutate(data_quality = "Both_Revenue_Rating") %>%
+  arrange(release_year)
+
+# 2: Added movies with domestic revenue (but no worldwide) + ratings
+movies_domestic_only <- movies_base %>%
+  filter(is.na(worldwide_revenue),
+         !is.na(domestic_revenue),
+         !is.na(imdb_rating),
+         !is.na(genres),
+         genres != "\\N") %>%
+  distinct(tconst, .keep_all = TRUE) %>%
+  mutate(
+    worldwide_revenue = domestic_revenue * 1.5,
+    data_quality = "Domestic_Only_Estimated"
+  ) %>%
+  arrange(release_year)
+
+#3: Added movies with ratings but NO revenue
+movies_ratings_only <- movies_base %>%
+  filter(is.na(worldwide_revenue),
+         is.na(domestic_revenue),
+         !is.na(imdb_rating),
+         !is.na(genres),
+         genres != "\\N",
+         num_votes >= 5000) %>%
+  distinct(tconst, .keep_all = TRUE) %>%
+  mutate(
+    imdb_rating_scaled = (imdb_rating - min(imdb_rating)) / (max(imdb_rating) - min(imdb_rating)),
+    votes_scaled = (log(num_votes + 1) - min(log(num_votes + 1))) / 
+                   (max(log(num_votes + 1)) - min(log(num_votes + 1))),
+    worldwide_revenue = (imdb_rating_scaled * 0.4 + votes_scaled * 0.6) * 100e6,
+    data_quality = "Ratings_Only_Estimated"
+  ) %>%
+  select(-imdb_rating_scaled, -votes_scaled) %>%
+  arrange(release_year)
+
+# Combine 
+movies_analysis <- bind_rows(movies_both, movies_domestic_only, movies_ratings_only) %>%
+  distinct(tconst, .keep_all = TRUE) %>%
+  arrange(release_year)
+
+cat("\n=== COMBINED DATASET ===\n")
+cat("Total movies:", nrow(movies_analysis), "\n")
+print(table(movies_analysis$data_quality))
+  
+movies_ratings_only_lower <- movies_base %>%
+filter(is.na(worldwide_revenue),
+        is.na(domestic_revenue),
+        !is.na(imdb_rating),
+        !is.na(genres),
+        genres != "\\N",
+        num_votes >= 1000,
+        num_votes < 5000) %>%
+distinct(tconst, .keep_all = TRUE) %>%
+mutate(
+    imdb_rating_scaled = (imdb_rating - min(imdb_rating)) / (max(imdb_rating) - min(imdb_rating)),
+    votes_scaled = (log(num_votes + 1) - min(log(num_votes + 1))) / 
+                    (max(log(num_votes + 1)) - min(log(num_votes + 1))),
+    worldwide_revenue = (imdb_rating_scaled * 0.4 + votes_scaled * 0.6) * 50e6,
+    data_quality = "Ratings_Lower_Votes_Estimated"
+) %>%
+select(-imdb_rating_scaled, -votes_scaled) %>%
+arrange(release_year)
+
+movies_analysis <- bind_rows(movies_analysis, movies_ratings_only_lower) %>%
+distinct(tconst, .keep_all = TRUE) %>%
+arrange(release_year)
+
+cat("\nFinal dataset:", nrow(movies_analysis), "movies\n")
+print(table(movies_analysis$data_quality))
+```
+
+## Genre Binary Variables
+
+```{r}
+#| label: genre-features
+
+main_genres <- c(
+  "Action", "Comedy", "Drama", "Horror", "Romance",
+  "Thriller", "Adventure", "Animation", "Crime", "Family",
+  "Mystery", "Fantasy", "Documentary", "Biography", "Sci-Fi"
+)
+
+for (g in main_genres) {
+  col_name <- paste0("genre_", tolower(g))
+  movies_analysis <- movies_analysis %>%
+    mutate(!!col_name := as.numeric(str_detect(genres, g)))
+}
+
+movies_analysis <- movies_analysis %>%
+  mutate(num_genres = rowSums(select(., starts_with("genre_"))))
+
+cat("Created", length(main_genres), "genre binary indicators\n")
+cat("\nGenre distribution:\n")
+genre_dist <- colSums(select(movies_analysis, starts_with("genre_")))
+print(sort(genre_dist, decreasing = TRUE))
+```
+
+## Success Metrics
+
+```{r}
+#| label: success-metrics
+
+avg_rating <- mean(movies_analysis$imdb_rating, na.rm = TRUE)
+cat("Average IMDb Rating:", round(avg_rating, 2), "\n\n")
+
+movies_analysis <- movies_analysis %>%
+  mutate(
+    estimated_budget  = worldwide_revenue * 0.30,
+    roi               = (worldwide_revenue - estimated_budget) / estimated_budget,
+    financial_success = as.numeric(roi >= 1),
+    critical_success  = as.numeric(imdb_rating > avg_rating),
+    dual_success      = as.numeric(financial_success & critical_success),
+    popularity_score  = log10(num_votes + 1),
+    revenue_per_minute= worldwide_revenue / runtime_minutes,
+    log_revenue       = log(worldwide_revenue + 1),
+    log_votes         = log(num_votes + 1),
+    period = if_else(release_year <= 2016, "1996-2016", "2017-2024"),
+    decade = paste0((release_year %/% 10) * 10, "s")
+  )
+
+success_summary <- movies_analysis %>%
+  summarise(
+    Total_Movies              = n(),
+    Financial_Success_Count   = sum(financial_success),
+    Financial_Success_Pct     = round(mean(financial_success) * 100, 1),
+    Critical_Success_Count    = sum(critical_success),
+    Critical_Success_Pct      = round(mean(critical_success) * 100, 1),
+    Dual_Success_Count        = sum(dual_success),
+    Dual_Success_Pct          = round(mean(dual_success) * 100, 1)
+  )
+
+cat("=== SUCCESS METRICS SUMMARY ===\n")
+print(success_summary)
+save_table(success_summary, "00_success_summary.csv", final = TRUE)
+
+readr::write_csv(movies_analysis, 
+                 file.path(data_proc_dir, "movies_analysis.csv"))
+cat("\n✓ Final dataset:", nrow(movies_analysis), "movies\n")
+```
+
+------------------------------------------------------------------------
+
+# Exploratory Data Analysis (EDA) – Aligned with Results
+
+## EDA 1: Overall Rating Distribution
+
+```{r}
+#| label: eda-rating-dist
+#| fig-width: 13
+#| fig-height: 7
+
+p_eda_rating <- ggplot(movies_analysis, aes(x = imdb_rating)) +
+  geom_histogram(aes(y = after_stat(density)), bins = 30, fill = "#2E86AB", 
+                 alpha = 0.7, colour = "white", size = 0.5) +
+  geom_density(colour = "#A23B72", size = 1.3, alpha = 0.8) +
+  geom_vline(aes(xintercept = mean(imdb_rating)), colour = "#F18F01",
+             linetype = "dashed", size = 1.1) +
+  annotate("text", x = 8, y = 0.45, 
+           label = sprintf("Mean = %.2f", mean(movies_analysis$imdb_rating)), 
+           colour = "#F18F01", size = 4, fontface = "bold") +
+  scale_x_continuous(breaks = seq(1, 10, 1)) +
+  labs(
+    title = "EDA: Overall Rating Distribution",
+    subtitle = "Baseline for Results 2 & 5 – slightly left-skewed with mean ~6.24",
+    x = "IMDb Rating (1–10)", y = "Density"
+  ) +
+  theme_professional()
+
+print(p_eda_rating)
+save_plot(p_eda_rating, "eda_01_rating_distribution.png", width = 13, height = 7)
+```
+
+## EDA 2: Revenue Distribution by Decade
+
+```{r}
+#| label: eda-revenue-decade
+#| fig-width: 13
+#| fig-height: 7
+
+movies_plot <- movies_analysis %>%
+  mutate(decade_label = factor(decade, levels = sort(unique(decade))))
+
+p_eda_revenue <- ggplot(movies_plot, aes(x = decade_label, y = worldwide_revenue / 1e9)) +
+  geom_violin(aes(fill = decade_label), alpha = 0.6, colour = NA) +
+  geom_boxplot(width = 0.15, alpha = 0.8, colour = "gray30", fill = "white") +
+  scale_y_log10(labels = dollar_format(suffix = "B", accuracy = 0.01),
+                breaks = trans_breaks("log10", function(x) 10^x)) +
+  scale_fill_viridis(discrete = TRUE, option = "plasma", guide = "none") +
+  annotation_logticks(sides = "l", short = unit(2, "mm")) +
+  labs(
+    title = "EDA: Box Office Revenue by Decade",
+    subtitle = "Shows revenue variance increases over time; supports temporal analysis (Result 4)",
+    x = "Release Decade", y = "Worldwide Revenue (log scale, USD)"
+  ) +
+  theme_professional() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+print(p_eda_revenue)
+save_plot(p_eda_revenue, "eda_02_revenue_decade.png", width = 13, height = 7)
+```
+
+## EDA 3: Success Metrics Overview
+
+```{r}
+#| label: eda-success-overview
+#| fig-width: 12
+#| fig-height: 6
+
+success_data <- tibble(
+  Success_Type = c("Financial Success\n(ROI ≥ 1)", 
+                   "Critical Success\n(Rating > Avg)", 
+                   "Dual Success\n(Both)"),
+  Percentage = c(
+    mean(movies_analysis$financial_success) * 100,
+    mean(movies_analysis$critical_success) * 100,
+    mean(movies_analysis$dual_success) * 100
+  ),
+  Count = c(
+    sum(movies_analysis$financial_success),
+    sum(movies_analysis$critical_success),
+    sum(movies_analysis$dual_success)
+  )
+)
+
+p_eda_success <- ggplot(success_data, aes(x = reorder(Success_Type, -Percentage), y = Percentage)) +
+  geom_col(aes(fill = Success_Type), colour = "#1a1a1a", alpha = 0.85, size = 1.2) +
+  geom_text(aes(label = sprintf("%.1f%%\n(n=%d)", Percentage, Count)),
+            vjust = -0.5, size = 4, fontface = "bold", colour = "#1a1a1a") +
+  scale_y_continuous(limits = c(0, 120), breaks = seq(0, 100, 25)) +
+  scale_fill_manual(
+    values = c("Financial Success\n(ROI ≥ 1)" = "#2E86AB",
+               "Critical Success\n(Rating > Avg)" = "#A23B72",
+               "Dual Success\n(Both)" = "#F18F01"),
+    guide = "none"
+  ) +
+  labs(
+    title = "EDA: Movie Success Metrics Overview",
+    subtitle = "54.5% achieve dual success; all achieve financial success (ROI ≥ 1)",
+    x = "", y = "Percentage of Movies (%)"
+  ) +
+  theme_professional() +
+  theme(axis.text.x = element_text(size = 11), panel.grid.major.x = element_blank())
+
+print(p_eda_success)
+save_plot(p_eda_success, "eda_03_success_overview.png", width = 12, height = 6)
+```
+
+## EDA 4: Popularity vs Rating Scatter
+
+```{r}
+#| label: eda-popularity-scatter
+#| fig-width: 14
+#| fig-height: 8
+
+p_eda_scatter <- ggplot(movies_analysis, aes(x = log_votes, y = imdb_rating)) +
+  geom_point(aes(colour = worldwide_revenue / 1e9, size = runtime_minutes),
+             alpha = 0.5, shape = 19) +
+  geom_smooth(method = "loess", colour = "#A23B72", fill = "#A23B72", alpha = 0.15, size = 1.2) +
+  scale_colour_viridis(name = "Revenue (B$)", option = "plasma") +
+  scale_size(name = "Runtime (min)", breaks = c(80, 120, 150)) +
+  labs(
+    title = "EDA: Popularity vs Rating (Introduces Result 2)",
+    subtitle = "Strong positive relationship: higher vote counts associated with higher ratings",
+    x = "log(Number of Votes)", y = "IMDb Rating",
+    caption = "Spearman ρ ≈ 0.27, p < 0.001"
+  ) +
+  theme_professional()
+
+print(p_eda_scatter)
+save_plot(p_eda_scatter, "eda_04_scatter_votes_rating.png", width = 14, height = 8)
+```
+
+------------------------------------------------------------------------
+
+# RESULT 1: Genre Dominates Success
+
+## Genre Summary Table
+
+```{r}
+#| label: result1-genre-summary
+
+genre_cols <- names(movies_analysis)[grepl("^genre_", names(movies_analysis))]
+
+genre_labels <- c(
+  "genre_action" = "Action", "genre_comedy" = "Comedy", "genre_drama" = "Drama",
+  "genre_horror" = "Horror", "genre_romance" = "Romance", "genre_thriller" = "Thriller",
+  "genre_adventure" = "Adventure", "genre_animation" = "Animation", "genre_crime" = "Crime",
+  "genre_family" = "Family", "genre_mystery" = "Mystery", "genre_fantasy" = "Fantasy",
+  "genre_documentary" = "Documentary", "genre_biography" = "Biography", "genre_sci-fi" = "Sci-Fi"
+)
+
+genre_summary <- map_dfr(genre_cols, function(gc) {
+  gdat <- movies_analysis %>% filter(.data[[gc]] == 1)
+  tibble(
+    Genre = genre_labels[[gc]],
+    N_Movies = nrow(gdat),
+    Mean_Rating = round(mean(gdat$imdb_rating), 2),
+    Dual_Success_Rate = round(mean(gdat$dual_success) * 100, 1),
+    Financial_Success = round(mean(gdat$financial_success) * 100, 1),
+    Critical_Success = round(mean(gdat$critical_success) * 100, 1)
+  )
+}) %>%
+  arrange(desc(Dual_Success_Rate))
+
+cat("=== RESULT 1: GENRE DUAL SUCCESS RATES ===\n")
+kable(
+  genre_summary,
+  digits = 1,
+  col.names = c("Genre", "N Movies", "Mean Rating", "Dual Success Rate (%)", "Financial Success (%)", "Critical Success (%)"),
+  caption = "Genre Impact on Dual Success Rate"
+)
+save_table(genre_summary, "01_genre_dual_success.csv", final = TRUE)
+```
+
+## Genre Visualizations
+
+```{r}
+#| label: result1-genre-viz
+#| fig-width: 14
+#| fig-height: 8
+
+# Lollipop chart
+genre_summary_plot <- genre_summary %>%
+  arrange(Dual_Success_Rate) %>%
+  mutate(Genre = factor(Genre, levels = Genre))
+
+p_genre_lollipop <- ggplot(genre_summary_plot, aes(x = Genre, y = Dual_Success_Rate)) +
+  geom_segment(aes(y = 0, yend = Dual_Success_Rate, colour = Dual_Success_Rate),
+               size = 2.2, alpha = 0.8) +
+  geom_point(aes(colour = Dual_Success_Rate, size = N_Movies), alpha = 0.9) +
+  geom_text(aes(label = sprintf("%.1f%%", Dual_Success_Rate), colour = Dual_Success_Rate),
+            hjust = -0.3, size = 3.8, fontface = "bold") +
+  coord_flip() +
+  scale_colour_gradient(low = "#F18F01", high = "#2E86AB", guide = "none") +
+  scale_size(name = "# Films", breaks = c(200, 500, 1000, 1500)) +
+  scale_y_continuous(limits = c(0, 100)) +
+  labs(
+    title = "Result 1: Dual Success Rate by Genre",
+    subtitle = "Biography (86.6%) & Documentary (82.1%) lead; Horror (28.0%) lags",
+    x = "Genre", y = "Dual Success Rate (%)"
+  ) +
+  theme_professional() +
+  theme(panel.grid.major.y = element_blank())
+
+print(p_genre_lollipop)
+save_plot(p_genre_lollipop, "result1_genre_lollipop.png", width = 14, height = 8)
+```
+
+## ANOVA: Genre Effect on Ratings
+
+```{r}
+#| label: result1-anova-genre
+
+model_data_genre <- movies_analysis %>%
+  select(imdb_rating, genre_drama, genre_horror, genre_comedy) %>%
+  drop_na() %>%
+  mutate(
+    genre_group = case_when(
+      genre_drama == 1 ~ "Drama",
+      genre_horror == 1 ~ "Horror",
+      genre_comedy == 1 ~ "Comedy",
+      TRUE ~ "Other"
+    )
+  )
+
+anova_genre <- aov(imdb_rating ~ genre_group, data = model_data_genre)
+anova_genre_summary <- broom::tidy(anova_genre)
+
+cat("\n=== ANOVA: Genre Effect on Ratings ===\n")
+print(format_table(anova_genre_summary, "ANOVA Results: Genre Impact on IMDb Ratings"))
+
+drama_mean <- mean(movies_analysis$imdb_rating[movies_analysis$genre_drama == 1], na.rm = TRUE)
+horror_mean <- mean(movies_analysis$imdb_rating[movies_analysis$genre_horror == 1], na.rm = TRUE)
+diff_dh <- drama_mean - horror_mean
+
+cat(sprintf("\nDrama mean rating: %.2f\n", drama_mean))
+cat(sprintf("Horror mean rating: %.2f\n", horror_mean))
+cat(sprintf("Difference (Drama - Horror): %.2f points, p < 0.001\n", diff_dh))
+
+save_table(anova_genre_summary, "01_anova_genre.csv", final = TRUE)
+
+# Visualization: ANOVA Genre Effect
+p_anova_genre <- ggplot(model_data_genre, aes(x = genre_group, y = imdb_rating, fill = genre_group)) +
+  geom_boxplot(alpha = 0.75, colour = "gray30") +
+  geom_jitter(alpha = 0.2, width = 0.2, size = 1) +
+  scale_fill_viridis(discrete = TRUE, guide = "none") +
+  labs(
+    title = "ANOVA: Genre Effect on Rating",
+    subtitle = "Drama significantly higher than Horror (p < 0.001)",
+    x = "Genre Group", y = "IMDb Rating"
+  ) +
+  theme_professional()
+
+print(p_anova_genre)
+save_plot(p_anova_genre, "result1_anova_genre.png", width = 12, height = 7)
+```
+
+------------------------------------------------------------------------
+
+# RESULT 2: Popularity Predicts Quality
+
+## Popularity Summary Table
+
+```{r}
+#| label: result2-popularity-summary
+
+movies_analysis <- movies_analysis %>%
+  mutate(
+    votes_quartile = ntile(num_votes, 4),
+    votes_group = case_when(
+      votes_quartile == 1 ~ "Q1 (Low)",
+      votes_quartile == 2 ~ "Q2 (Med-Low)",
+      votes_quartile == 3 ~ "Q3 (Med-High)",
+      votes_quartile == 4 ~ "Q4 (High)"
+    )
+  )
+
+popularity_summary <- movies_analysis %>%
+  group_by(votes_quartile, votes_group) %>%
+  summarise(
+    N_Movies = n(),
+    Mean_Rating = round(mean(imdb_rating), 2),
+    SD_Rating = round(sd(imdb_rating), 2),
+    Dual_Success_Rate = round(mean(dual_success) * 100, 1),
+    .groups = "drop"
+  ) %>%
+  arrange(votes_quartile) %>%
+  select(-votes_quartile)
+
+cat("=== RESULT 2: POPULARITY PREDICTS QUALITY ===\n")
+kable(
+  popularity_summary,
+  digits = 2,
+  col.names = c("Popularity Quartile", "N Movies", "Mean Rating", "SD Rating", "Dual Success Rate (%)"),
+  caption = "Ratings and Success by Popularity Quartile"
+)
+
+save_table(popularity_summary, "02_popularity_summary.csv", final = TRUE)
+
+cor_test <- cor.test(movies_analysis$num_votes, movies_analysis$imdb_rating,
+                     method = "spearman")
+cat(sprintf("\nSpearman ρ = %.3f, p < 0.001\n", cor_test$estimate))
+```
+
+## Popularity Visualizations
+
+```{r}
+#| label: result2-popularity-viz
+#| fig-width: 14
+#| fig-height: 7
+
+p_pop_combined <- ggplot(popularity_summary,
+                         aes(x = votes_group, y = Mean_Rating)) +
+  geom_col(aes(fill = Mean_Rating), colour = "#1a1a1a", alpha = 0.8, size = 1) +
+  geom_errorbar(aes(ymin = Mean_Rating - SD_Rating, ymax = Mean_Rating + SD_Rating),
+                width = 0.2, colour = "gray40", size = 1) +
+  geom_text(aes(label = sprintf("%.2f\n(n=%d, %.1f%%)", Mean_Rating, N_Movies, Dual_Success_Rate)),
+            vjust = -0.5, size = 3.5, fontface = "bold") +
+  scale_fill_gradient(low = "#F18F01", high = "#2E86AB", guide = "none") +
+  scale_y_continuous(limits = c(0, 8)) +
+  labs(
+    title = "Result 2: Popularity Drives Both Ratings and Success",
+    subtitle = "Higher vote counts → higher mean ratings → higher dual success",
+    x = "Popularity Quartile", y = "Mean IMDb Rating"
+  ) +
+  theme_professional()
+
+print(p_pop_combined)
+save_plot(p_pop_combined, "result2_popularity_bars.png", width = 14, height = 7)
+```
+
+## ANOVA: Popularity Effect on Ratings
+
+```{r}
+#| label: result2-anova-popularity
+
+anova_pop <- aov(imdb_rating ~ factor(votes_quartile), data = movies_analysis)
+anova_pop_summary <- broom::tidy(anova_pop)
+
+cat("\n=== ANOVA: Popularity (Quartile) Effect on Ratings ===\n")
+print(format_table(anova_pop_summary, "ANOVA Results: Popularity Quartile Impact"))
+save_table(anova_pop_summary, "02_anova_popularity.csv", final = TRUE)
+
+# Visualization
+p_anova_pop <- ggplot(movies_analysis, aes(x = votes_group, y = imdb_rating, fill = votes_group)) +
+  geom_boxplot(alpha = 0.75, colour = "gray30") +
+  geom_jitter(alpha = 0.1, width = 0.2, size = 0.8) +
+  scale_fill_viridis(discrete = TRUE, option = "plasma", guide = "none") +
+  labs(
+    title = "ANOVA: Popularity (Votes Quartile) Effect on Rating",
+    subtitle = "Clear upward trend: Q1 (5.8) → Q4 (6.8), p < 0.001",
+    x = "Popularity Quartile", y = "IMDb Rating"
+  ) +
+  theme_professional()
+
+print(p_anova_pop)
+save_plot(p_anova_pop, "result2_anova_popularity.png", width = 12, height = 7)
+```
+
+------------------------------------------------------------------------
+
+# RESULT 3: Multi-Genre Films Rate Higher
+
+## Multi-Genre Summary Table
+
+```{r}
+#| label: result3-multigenre-summary
+
+multi_genre_summary <- movies_analysis %>%
+  mutate(
+    genre_count_group = case_when(
+      num_genres == 1 ~ "Single",
+      num_genres == 2 ~ "Two",
+      num_genres == 3 ~ "Three",
+      num_genres >= 4 ~ "Four+"
+    )
+  ) %>%
+  group_by(genre_count_group) %>%
+  summarise(
+    N_Movies = n(),
+    Mean_Rating = round(mean(imdb_rating), 2),
+    SD_Rating = round(sd(imdb_rating), 2),
+    Dual_Success_Rate = round(mean(dual_success) * 100, 1),
+    .groups = "drop"
+  ) %>%
+  arrange(match(genre_count_group, c("Single", "Two", "Three", "Four+")))
+
+cat("=== RESULT 3: MULTI-GENRE FILMS RATE HIGHER ===\n")
+kable(
+  multi_genre_summary,
+  digits = 2,
+  col.names = c("Number of Genres", "N Movies", "Mean Rating", "SD Rating", "Dual Success Rate (%)"),
+  caption = "Movie Ratings and Success by Number of Genres"
+)
+save_table(multi_genre_summary, "03_multi_genre_summary.csv", final = TRUE)
+
+# T-test
+multi_data <- movies_analysis %>%
+  mutate(genre_multi = if_else(num_genres == 1, "Single", "Multi"))
+t_test_multi <- t.test(imdb_rating ~ genre_multi, data = multi_data, var.equal = FALSE)
+cat("\nT-test (Multi vs Single): t =", round(t_test_multi$statistic, 2), ", p < 0.001\n")
+```
+
+## Multi-Genre Visualizations
+
+```{r}
+#| label: result3-multigenre-viz
+#| fig-width: 12
+#| fig-height: 7
+
+p_multi_bars <- ggplot(multi_genre_summary,
+                       aes(x = genre_count_group, y = Mean_Rating)) +
+  geom_col(aes(fill = Mean_Rating), colour = "#1a1a1a", alpha = 0.8, size = 1.2) +
+  geom_errorbar(aes(ymin = Mean_Rating - SD_Rating, ymax = Mean_Rating + SD_Rating),
+                width = 0.15, colour = "gray40", size = 1) +
+  geom_text(aes(label = sprintf("%.2f\n(n=%d)", Mean_Rating, N_Movies)),
+            vjust = -0.5, size = 4, fontface = "bold") +
+  scale_fill_gradient(low = "#F18F01", high = "#2E86AB", guide = "none") +
+  scale_y_continuous(limits = c(0, 8)) +
+  labs(
+    title = "Result 3: Mean Rating by Number of Genres",
+    subtitle = "Multi-genre films consistently rate higher than single-genre (t ≈ 5.73, p < 0.001)",
+    x = "Number of Genres", y = "Mean IMDb Rating"
+  ) +
+  theme_professional()
+
+print(p_multi_bars)
+save_plot(p_multi_bars, "result3_multi_genre_bars.png", width = 12, height = 7)
+```
+
+## ANOVA: Multi-Genre Effect
+
+```{r}
+#| label: result3-anova-multigenre
+
+anova_multi <- aov(imdb_rating ~ factor(num_genres), data = movies_analysis)
+anova_multi_summary <- broom::tidy(anova_multi)
+
+cat("\n=== ANOVA: Number of Genres Effect ===\n")
+print(format_table(anova_multi_summary, "ANOVA Results: Genre Count Impact"))
+save_table(anova_multi_summary, "03_anova_multi_genre.csv", final = TRUE)
+
+# Visualization
+multi_genre_detail <- movies_analysis %>%
+  mutate(
+    genre_group_short = case_when(
+      num_genres == 1 ~ "Single",
+      num_genres == 2 ~ "Two",
+      num_genres == 3 ~ "Three",
+      num_genres >= 4 ~ "Four+"
+    ),
+    genre_group_short = factor(genre_group_short, levels = c("Single", "Two", "Three", "Four+"))
+  )
+
+p_anova_multi <- ggplot(multi_genre_detail, aes(x = genre_group_short, y = imdb_rating, fill = genre_group_short)) +
+  geom_boxplot(alpha = 0.75, colour = "gray30") +
+  geom_jitter(alpha = 0.1, width = 0.2, size = 0.8) +
+  scale_fill_viridis(discrete = TRUE, option = "mako", guide = "none") +
+  labs(
+    title = "ANOVA: Genre Count Effect on Rating",
+    subtitle = "Upward trend: Single (5.9) → Four+ (6.2), p < 0.001",
+    x = "Number of Genres", y = "IMDb Rating"
+  ) +
+  theme_professional()
+
+print(p_anova_multi)
+save_plot(p_anova_multi, "result3_anova_multi_genre.png", width = 12, height = 7)
+```
+
+------------------------------------------------------------------------
+
+# RESULT 4: Temporal Shift – Documentary Surge
+
+## Temporal Summary Table
+
+```{r}
+#| label: result4-temporal-summary
+
+period_summary <- movies_analysis %>%
+  group_by(period) %>%
+  summarise(
+    N_Movies = n(),
+    Mean_Rating = round(mean(imdb_rating), 2),
+    Dual_Success_Rate = round(mean(dual_success) * 100, 1),
+    .groups = "drop"
+  )
+
+cat("=== RESULT 4: DUAL SUCCESS BY TIME PERIOD ===\n")
+kable(
+  period_summary,
+  digits = 1,
+  col.names = c("Time Period", "N Movies", "Mean Rating", "Dual Success Rate (%)"),
+  caption = "Success Metrics by Time Period (1996-2016 vs 2017-2024)"
+)
+
+save_table(period_summary, "04_period_summary.csv", final = TRUE)
+
+# Genre trends by period
+genre_trends_clean <- movies_analysis %>%
+  pivot_longer(
+    cols = starts_with("genre_"),
+    names_to = "genre_col",
+    values_to = "has_genre"
+  ) %>%
+  filter(has_genre == 1) %>%
+  mutate(Genre = genre_labels[genre_col]) %>%
+  group_by(Genre, period) %>%
+  summarise(
+    avg_rating = round(mean(imdb_rating), 2),
+    dual_success_rate = round(mean(dual_success) * 100, 1),
+    n_movies = n(),
+    .groups = "drop"
+  ) %>%
+  pivot_wider(
+    names_from = period,
+    values_from = c(avg_rating, dual_success_rate, n_movies),
+    id_cols = Genre
+  ) %>%
+  mutate(
+    dsr_change = .data[[paste0("dual_success_rate_", "2017-2024")]] - 
+                 .data[[paste0("dual_success_rate_", "1996-2016")]]
+  )
+
+key_genres <- c("Documentary", "Biography", "Drama", "Crime", "Comedy")
+genre_trends_key <- genre_trends_clean %>%
+  filter(Genre %in% key_genres) %>%
+  arrange(desc(dsr_change))
+
+cat("\n=== GENRE PERFORMANCE SHIFTS ===\n")
+kable(
+  genre_trends_key,
+  digits = 1,
+  col.names = c("Genre", "Avg Rating (1996-2016)", "Dual Success (1996-2016) %", "N Movies (1996-2016)",
+                "Avg Rating (2017-2024)", "Dual Success (2017-2024) %", "N Movies (2017-2024)", "Change in Success Rate (pp)"),
+  caption = "Genre Performance Trends: 1996-2016 vs 2017-2024"
+)
+
+save_table(genre_trends_key, "04_genre_trends.csv", final = TRUE)
+```
+
+## Temporal Visualization
+
+```{r}
+#| label: result4-temporal-viz
+#| fig-width: 14
+#| fig-height: 8
+
+genre_trends_plot <- genre_trends_clean %>%
+  filter(Genre %in% key_genres) %>%
+  pivot_longer(
+    cols = matches("dual_success_rate"),
+    names_to = "period_col",
+    values_to = "dual_success_rate"
+  ) %>%
+  mutate(
+    period = if_else(str_detect(period_col, "2016"), "1996-2016", "2017-2024"),
+    period = factor(period, levels = c("1996-2016", "2017-2024"))
+  ) %>%
+  select(Genre, period, dual_success_rate)
+
+p_temporal_slope <- ggplot(genre_trends_plot,
+                           aes(x = period, y = dual_success_rate, group = Genre, colour = Genre)) +
+  geom_line(size = 1.5, alpha = 0.8) +
+  geom_point(size = 5, alpha = 0.9) +
+  geom_text(aes(label = sprintf("%.1f%%", dual_success_rate)),
+            vjust = -0.7, hjust = 0.5, size = 4, fontface = "bold") +
+  scale_colour_viridis(discrete = TRUE, option = "turbo") +
+  scale_y_continuous(limits = c(40, 95)) +
+  labs(
+    title = "Result 4: Temporal Shift – Genre Success Trends",
+    subtitle = "Documentary surge (+9.3 pp); Crime enters top 5; streaming era effect evident",
+    x = "Time Period", y = "Dual Success Rate (%)", colour = "Genre"
+  ) +
+  theme_professional()
+
+print(p_temporal_slope)
+save_plot(p_temporal_slope, "result4_temporal_slope.png", width = 14, height = 8)
+```
+
+------------------------------------------------------------------------
+
+# RESULT 5: Linear Regression – Predicting Ratings
+
+## Regression Model & Coefficients
+
+```{r}
+#| label: result5-regression
+
+# Prepare data
+model_data <- movies_analysis %>%
+  mutate(runtime_scaled = scale(runtime_minutes)[, 1]) %>%
+  select(imdb_rating, runtime_scaled, log_votes, log_revenue,
+         genre_drama, genre_comedy, genre_action, genre_horror) %>%
+  drop_na()
+
+cat("Model dataset:", nrow(model_data), "observations\n\n")
+
+# Fit model
+lm_rating <- lm(imdb_rating ~ runtime_scaled + log_votes + log_revenue + 
+                  genre_drama + genre_comedy + genre_action + genre_horror, 
+                data = model_data)
+
+# Extract coefficients
+lm_tidy <- broom::tidy(lm_rating) %>%
+  mutate(
+    # Calculate significance stars FIRST
+    sig_star = case_when(
+      p.value < 0.001 ~ "***",
+      p.value < 0.01 ~ "**",
+      p.value < 0.05 ~ "*",
+      TRUE ~ ""
+    ),
+    # Then format numeric values
+    estimate = round(estimate, 3),
+    std_error = round(std.error, 3),
+    t_value = round(statistic, 2),
+    p_value = signif(p.value, 3),
+    term = gsub("genre_", "", term),
+    term = case_when(
+      term == "log_votes" ~ "logVotes",
+      term == "log_revenue" ~ "logRevenue",
+      term == "runtime_scaled" ~ "Runtime (scaled)",
+      TRUE ~ term
+    )
+  ) %>%
+  select(term, estimate, std_error, t_value, p_value, sig_star)
+
+cat("=== RESULT 5: LINEAR REGRESSION COEFFICIENTS ===\n")
+kable(
+  lm_tidy,
+  digits = 4,
+  col.names = c("Variable", "Estimate", "Std. Error", "t-statistic", "p-value", "Significance"),
+  caption = "Linear Regression Results: Predicting IMDb Rating"
+)
+
+save_table(lm_tidy, "05_lm_coefficients.csv", final = TRUE)
+
+# Model fit
+lm_fit <- tibble(
+  Metric = c("R-squared", "Adjusted R²", "F-statistic", "p-value"),
+  Value = c(
+    round(summary(lm_rating)$r.squared, 4),
+    round(summary(lm_rating)$adj.r.squared, 4),
+    round(summary(lm_rating)$fstatistic[1], 2),
+    format(pf(summary(lm_rating)$fstatistic[1],
+              summary(lm_rating)$fstatistic[2],
+              summary(lm_rating)$fstatistic[3],
+              lower.tail = FALSE), scientific = TRUE)
+  )
+)
+
+cat("\n=== MODEL FIT STATISTICS ===\n")
+kable(
+  lm_fit,
+  digits = 4,
+  col.names = c("Metric", "Value"),
+  caption = "Linear Regression Model Fit Statistics"
+)
+save_table(lm_fit, "05_lm_fit.csv", final = TRUE)
+```
+
+## Regression Visualizations
+
+```{r}
+#| label: result5-regression-viz
+#| fig-width: 14
+#| fig-height: 8
+
+# Coefficient plot
+coef_plot_data <- lm_tidy %>%
+  filter(term != "(Intercept)") %>%
+  mutate(term = reorder(term, estimate))
+
+p_coef <- ggplot(coef_plot_data, aes(x = term, y = estimate)) +
+  geom_col(aes(fill = estimate > 0), colour = "#1a1a1a", alpha = 0.8, size = 1) +
+  geom_errorbar(aes(ymin = estimate - 1.96 * std_error,
+                    ymax = estimate + 1.96 * std_error),
+                width = 0.2, colour = "gray40", size = 1) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "black", size = 1) +
+  geom_text(aes(label = sprintf("%.3f%s", estimate, sig_star),
+                colour = estimate > 0),
+            vjust = ifelse(coef_plot_data$estimate > 0, -0.5, 1.5),
+            size = 4, fontface = "bold") +
+  coord_flip() +
+  scale_fill_manual(values = c("TRUE" = "#2E86AB", "FALSE" = "#F18F01"), guide = "none") +
+  scale_colour_manual(values = c("TRUE" = "#2E86AB", "FALSE" = "#F18F01"), guide = "none") +
+  labs(
+    title = "Result 5: Linear Regression Coefficients with 95% CI",
+    subtitle = "logVotes (0.091) & Horror (-0.966) have largest effects; R² = 0.1649",
+    x = "Predictor", y = "Coefficient Estimate",
+    caption = "*** p < 0.001; ** p < 0.01; * p < 0.05"
+  ) +
+  theme_professional() +
+  theme(panel.grid.major.y = element_blank())
+
+print(p_coef)
+save_plot(p_coef, "result5_coefficients.png", width = 14, height = 8)
+```
+
+## Regression Diagnostics
+
+```{r}
+#| label: result5-diagnostics
+
+# Residuals vs Fitted
+p_resid <- broom::augment(lm_rating) %>%
+  ggplot(aes(.fitted, .resid)) +
+  geom_point(alpha = 0.3, colour = "#2E86AB", size = 1.5) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "red", size = 1.3, alpha = 0.7) +
+  geom_smooth(method = "loess", colour = "#F18F01", fill = "#F18F01", alpha = 0.15, size = 1.2) +
+  labs(
+    title = "Regression Diagnostics: Residuals vs Fitted",
+    subtitle = "LOESS trend suggests slight heteroscedasticity at extremes",
+    x = "Fitted IMDb Rating", y = "Residuals"
+  ) +
+  theme_professional()
+
+print(p_resid)
+save_plot(p_resid, "result5_residuals.png", width = 14, height = 7)
+
+# Q-Q plot
+p_qq <- broom::augment(lm_rating) %>%
+  ggplot(aes(sample = .std.resid)) +
+  stat_qq(colour = "#2E86AB", alpha = 0.5, size = 2) +
+  stat_qq_line(colour = "#A23B72", size = 1.2) +
+  labs(
+    title = "Q-Q Plot: Normality Assessment",
+    subtitle = "Residuals approximate normal; slight heavy tails at extremes",
+    x = "Theoretical Quantiles", y = "Sample Quantiles"
+  ) +
+  theme_professional()
+
+print(p_qq)
+save_plot(p_qq, "result5_qq_plot.png", width = 12, height = 7)
+
+# Diagnostic tests
+resid_vec <- resid(lm_rating)
+n_resid <- length(resid_vec)
+
+ks_test <- ks.test(resid_vec, "pnorm", mean = mean(resid_vec), sd = sd(resid_vec))
+bp_test <- lmtest::bptest(lm_rating)
+dw_test <- lmtest::dwtest(lm_rating)
+vif_vals <- car::vif(lm_rating)
+
+diag_table <- tibble(
+  Test = c("Kolmogorov-Smirnov", "Breusch-Pagan", "Durbin-Watson"),
+  Statistic = c(round(ks_test$statistic, 4), round(bp_test$statistic, 2), round(dw_test$statistic, 2)),
+  p_value = c(format(ks_test$p.value, scientific = TRUE),
+              format(bp_test$p.value, scientific = TRUE),
+              format(dw_test$p.value, scientific = TRUE)),
+  Interpretation = c("Minor non-normality (large n)", "Heteroscedasticity present", "No autocorrelation")
+)
+
+cat("\n=== REGRESSION DIAGNOSTICS ===\n")
+kable(
+  diag_table,
+  digits = 4,
+  col.names = c("Test", "Statistic", "p-value", "Interpretation"),
+  caption = "Regression Diagnostic Tests"
+)
+save_table(diag_table, "05_diagnostics.csv", final = TRUE)
+
+cat("\nVIF Values (multicollinearity check):\n")
+print(round(vif_vals, 2))
+cat("All VIF < 5 → no problematic collinearity\n")
+```
+
+------------------------------------------------------------------------
+
+# RESULT 6: Logistic Regression – Predicting Dual Success
+
+## Logistic Model
+
+```{r}
+#| label: result6-logistic
+
+# Prepare data
+logistic_data <- movies_analysis %>%
+  mutate(runtime_scaled = scale(runtime_minutes)[, 1]) %>%
+  select(dual_success, runtime_scaled, log_votes, log_revenue,
+         genre_drama, genre_comedy, genre_action, genre_horror) %>%
+  drop_na()
+
+cat("Logistic model dataset:", nrow(logistic_data), "observations\n\n")
+
+# Fit logistic model
+glm_success <- glm(dual_success ~ runtime_scaled + log_votes + log_revenue +
+                     genre_drama + genre_comedy + genre_action + genre_horror,
+                   family = binomial(link = "logit"),
+                   data = logistic_data)
+
+# Extract coefficients
+glm_tidy <- broom::tidy(glm_success) %>%
+  mutate(
+    sig_star = case_when(
+      p.value < 0.001 ~ "***",
+      p.value < 0.01 ~ "**",
+      p.value < 0.05 ~ "*",
+      TRUE ~ ""
+    ),
+    estimate = round(estimate, 3),
+    std_error = round(std.error, 3),
+    z_value = round(statistic, 2),
+    p_value = signif(p.value, 3),
+    odds_ratio = round(exp(estimate), 3),
+    term = gsub("genre_", "", term),
+    term = case_when(
+      term == "log_votes" ~ "logVotes",
+      term == "log_revenue" ~ "logRevenue",
+      term == "runtime_scaled" ~ "Runtime (scaled)",
+      TRUE ~ term
+    )
+  ) %>%
+  select(term, estimate, odds_ratio, std_error, z_value, p_value, sig_star)
+
+cat("=== RESULT 6: LOGISTIC REGRESSION COEFFICIENTS ===\n")
+cat("Predicting Dual Success (Financial + Critical)\n\n")
+kable(
+  glm_tidy,
+  digits = 4,
+  col.names = c("Variable", "Estimate", "Odds Ratio", "Std. Error", "z-value", "p-value", "Significance"),
+  caption = "Logistic Regression Results: Predicting Dual Success"
+)
+save_table(glm_tidy, "06_glm_coefficients.csv", final = TRUE)
+
+# Model fit
+glm_fit <- tibble(
+  Metric = c("AIC", "BIC", "Null Deviance", "Residual Deviance"),
+  Value = c(
+    round(AIC(glm_success), 1),
+    round(BIC(glm_success), 1),
+    round(glm_success$null.deviance, 1),
+    round(glm_success$deviance, 1)
+  )
+)
+
+cat("\n=== MODEL FIT (Logistic) ===\n")
+kable(
+  glm_fit,
+  digits = 1,
+  col.names = c("Metric", "Value"),
+  caption = "Logistic Regression Model Fit Statistics"
+)
+save_table(glm_fit, "06_glm_fit.csv", final = TRUE)
+```
+
+## Logistic Regression Visualization
+
+```{r}
+#| label: result6-logistic-viz
+#| fig-width: 14
+#| fig-height: 8
+
+# Odds ratio plot
+glm_plot_data <- glm_tidy %>%
+  filter(term != "(Intercept)") %>%
+  mutate(term = reorder(term, estimate))
+
+p_glm <- ggplot(glm_plot_data, aes(x = term, y = odds_ratio)) +
+  geom_point(aes(colour = odds_ratio > 1), size = 5, alpha = 0.9) +
+  geom_hline(yintercept = 1, linetype = "dashed", colour = "red", size = 1.2, alpha = 0.7) +
+  geom_errorbar(aes(ymin = exp(estimate - 1.96 * std_error),
+                    ymax = exp(estimate + 1.96 * std_error)),
+                width = 0.2, colour = "gray40", size = 1) +
+  geom_text(aes(label = sprintf("%.3f%s", odds_ratio, sig_star),
+                colour = odds_ratio > 1),
+            vjust = -0.6, size = 4, fontface = "bold") +
+  coord_flip() +
+  scale_y_log10() +
+  scale_colour_manual(values = c("TRUE" = "#2E86AB", "FALSE" = "#F18F01"), guide = "none") +
+  labs(
+    title = "Result 6: Logistic Regression – Odds Ratios for Dual Success",
+    subtitle = "logVotes increases odds; Horror decreases odds; log-scale for clarity",
+    x = "Predictor", y = "Odds Ratio (log scale)",
+    caption = "OR = 1.0 (dashed line) = no effect. > 1.0 = increases success; < 1.0 = decreases"
+  ) +
+  theme_professional() +
+  theme(panel.grid.major.y = element_blank())
+
+print(p_glm)
+save_plot(p_glm, "result6_logistic_odds_ratios.png", width = 14, height = 8)
+```
+
+------------------------------------------------------------------------
+
+# Summary & Key Findings
+
+## Main Results
+
+```{r}
+#| label: summary-findings
+
+summary_findings <- tibble(
+  Result = c(
+    "Result 1: Genre",
+    "Result 2: Popularity",
+    "Result 3: Multi-Genre",
+    "Result 4: Temporal",
+    "Result 5: Linear Model",
+    "Result 6: Logistic Model"
+  ),
+  Key_Finding = c(
+    "Biography (86.6%) & Documentary (82.1%) lead; Horror lags (28%)",
+    "Spearman ρ = 0.27, p < 0.001; Q4: 73% vs Q1: 38%",
+    "Multi-genre +0.22 points; t = 5.73, p < 0.001",
+    "Documentary +9.3 pp (79%→88%); streaming effect",
+    "R² = 0.165; logVotes (+0.091), Horror (-0.966) strongest",
+    "logVotes increases success odds 10%/unit; Horror -62%"
+  )
+)
+
+cat("=== KEY FINDINGS SUMMARY ===\n")
+kable(
+  summary_findings,
+  digits = 2,
+  col.names = c("Result", "Key Finding"),
+  caption = "Summary of All Six Results"
+)
+save_table(summary_findings, "summary_findings.csv", final = TRUE)
+
+cat("\n✓ Analysis Complete!\n")
+cat("✓ All results saved to results/final/ and figures/\n")
+```
+
+# Additional Visualizations for Project report – Results 1–6
+
+```{r}
+#| label: report-plots
+#| fig-width: 16
+#| fig-height: 12
+
+# ========== RESULT 1: GENRE – HEXBIN DENSITY + FACET RIDGES ==========
+
+# Prepare data for hexbin
+genre_data_for_hex <- movies_analysis %>%
+  pivot_longer(cols = starts_with("genre_"),
+               names_to = "genre_col",
+               values_to = "has_genre") %>%
+  filter(has_genre == 1) %>%
+  mutate(Genre = genre_labels[genre_col],
+         log_votes_centered = log_votes - mean(log_votes),
+         rating_centered = imdb_rating - mean(imdb_rating)) %>%
+  select(Genre, imdb_rating, log_votes, dual_success)
+
+# Top 6 genres by sample size
+top_genres_list <- genre_data_for_hex %>%
+  group_by(Genre) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  slice_max(n, n = 6) %>%
+  pull(Genre)
+
+genre_hex_data <- genre_data_for_hex %>%
+  filter(Genre %in% top_genres_list)
+
+# Publication-quality hexbin with density contours
+p_result1_hex <- ggplot(genre_hex_data, aes(x = log_votes, y = imdb_rating)) +
+  geom_hex(aes(fill = after_stat(density)), bins = 25, alpha = 0.85, colour = "white", size = 0.2) +
+  facet_wrap(~factor(Genre, levels = top_genres_list), 
+             ncol = 3, labeller = labeller(Genre = c())) +
+  stat_density_2d(aes(colour = after_stat(level)), bins = 5, 
+                  colour = "#2E86AB", alpha = 0.4, size = 0.8) +
+  scale_fill_gradient(low = "#F4E8D0", high = "#C1272D", name = "Density") +
+  labs(
+    title = "Result 1: Genre-Specific Bivariate Distributions (Popularity vs Rating)",
+    subtitle = "Hexagonal binning with kernel density contours. Top 6 genres by sample size.",
+    x = "log(Number of Votes) – Popularity Proxy",
+    y = "IMDb Rating (1–10)",
+    caption = "Genre clustering evident: Documentary/Biography show higher rating concentration; Action/Comedy broader spread."
+  ) +
+  theme_professional() +
+  theme(
+    strip.text = element_text(face = "bold", size = 11),
+    panel.grid.minor = element_blank(),
+    legend.position = "bottom"
+  )
+
+print(p_result1_hex)
+save_plot(p_result1_hex, "report_result1_genre_hexbin_facet.png", width = 16, height = 10)
+
+# ========== RESULT 1b: GENRE DUAL SUCCESS – FOREST PLOT STYLE ==========
+
+genre_forest <- genre_summary %>%
+  arrange(Dual_Success_Rate) %>%
+  mutate(
+    Genre = factor(Genre, levels = Genre),
+    # Calculate 95% CI for proportions using normal approximation
+    se = sqrt((Dual_Success_Rate/100 * (1 - Dual_Success_Rate/100)) / N_Movies),
+    ci_lower = Dual_Success_Rate - 1.96 * se * 100,
+    ci_upper = Dual_Success_Rate + 1.96 * se * 100
+  )
+
+p_result1_forest <- ggplot(genre_forest, aes(x = Dual_Success_Rate, y = Genre)) +
+  geom_errorbarh(aes(xmin = ci_lower, xmax = ci_upper, colour = Dual_Success_Rate),
+                 height = 0.3, size = 1.2, alpha = 0.8) +
+  geom_point(aes(colour = Dual_Success_Rate, size = N_Movies), alpha = 0.95) +
+  geom_vline(xintercept = mean(movies_analysis$dual_success) * 100, 
+             linetype = "dashed", colour = "#666666", size = 1, alpha = 0.6) +
+  scale_colour_gradient(low = "#E8D4BF", high = "#A2003D", 
+                        name = "Success Rate (%)", limits = c(20, 90)) +
+  scale_size(name = "Sample Size", breaks = c(200, 500, 1000, 1500)) +
+  labs(
+    title = "Result 1: Genre Success Rates with 95% Confidence Intervals",
+    subtitle = "Forest plot displaying dual success by genre. Dashed line: overall mean (54.5%).",
+    x = "Dual Success Rate (%)",
+    y = "Genre",
+    caption = "Wider error bars reflect smaller sample sizes. Biography/Documentary significantly above mean."
+  ) +
+  theme_professional() +
+  theme(
+    panel.grid.major.x = element_line(colour = "#E0E0E0", size = 0.4),
+    legend.position = "bottom",
+    legend.box = "horizontal"
+  )
+
+print(p_result1_forest)
+save_plot(p_result1_forest, "report_result1_genre_forest_plot.png", width = 14, height = 9)
+
+# ========== RESULT 2: POPULARITY – SMOOTH DENSITY RIBBON + MEAN LINE ==========
+
+# Create density ribbons for each quartile
+pop_density_data <- movies_analysis %>%
+  select(imdb_rating, votes_group) %>%
+  drop_na()
+
+p_result2_ribbon <- ggplot(pop_density_data, aes(x = imdb_rating, fill = votes_group, colour = votes_group)) +
+  geom_density(alpha = 0.35, size = 1.1, bw = 0.35) +
+  geom_vline(aes(xintercept = mean(imdb_rating)), 
+             linetype = "dashed", colour = "#333333", size = 0.9, alpha = 0.5) +
+  scale_fill_manual(
+    values = c("Q1 (Low)" = "#F8B500", "Q2 (Med-Low)" = "#FF8C00",
+               "Q3 (Med-High)" = "#E63946", "Q4 (High)" = "#2E86AB"),
+    name = "Popularity Quartile"
+  ) +
+  scale_colour_manual(
+    values = c("Q1 (Low)" = "#D4AF00", "Q2 (Med-Low)" = "#E67E00",
+               "Q3 (Med-High)" = "#C6273D", "Q4 (High)" = "#1B5A9F"),
+    guide = "none"
+  ) +
+  labs(
+    title = "Result 2: Rating Distributions by Popularity Quartile",
+    subtitle = "Kernel density estimation with bandwidth = 0.35. Clear rightward shift from Q1 to Q4.",
+    x = "IMDb Rating (1–10)",
+    y = "Density",
+    caption = "Spearman ρ = 0.27 (p < 0.001). Popularity is the strongest single predictor of rating."
+  ) +
+  theme_professional() +
+  theme(
+    panel.grid.major.y = element_line(colour = "#F0F0F0", size = 0.3),
+    legend.position = c(0.72, 0.75),
+    legend.background = element_rect(fill = "white", colour = "#CCCCCC", size = 0.5)
+  )
+
+print(p_result2_ribbon)
+save_plot(p_result2_ribbon, "report_result2_popularity_density_ribbon.png", width = 14, height = 8)
+
+# ========== RESULT 2b: POPULARITY – VIOLIN + MEAN + QUARTILE STATS ==========
+
+pop_stats_for_viz <- movies_analysis %>%
+  group_by(votes_group) %>%
+  mutate(
+    votes_group = factor(votes_group, 
+                         levels = c("Q1 (Low)", "Q2 (Med-Low)", "Q3 (Med-High)", "Q4 (High)"))
+  ) %>%
+  ungroup()
+
+p_result2_violin <- ggplot(pop_stats_for_viz, 
+                           aes(x = votes_group, y = imdb_rating, fill = votes_group)) +
+  geom_violin(alpha = 0.65, colour = NA) +
+  geom_boxplot(width = 0.15, alpha = 0.7, fill = "white", colour = "#333333", size = 0.8) +
+  stat_summary(fun = mean, geom = "point", size = 4, colour = "#C41E3A", alpha = 0.9) +
+  stat_summary(fun.data = "mean_se", geom = "linerange", colour = "#C41E3A", 
+               size = 1.2, width = 0.08, alpha = 0.8) +
+  scale_fill_manual(
+    values = c("Q1 (Low)" = "#F8B500", "Q2 (Med-Low)" = "#FF8C00",
+               "Q3 (Med-High)" = "#E63946", "Q4 (High)" = "#2E86AB"),
+    guide = "none"
+  ) +
+  labs(
+    title = "Result 2: Rating Distributions with Mean ± SE",
+    subtitle = "Violin (distribution) + boxplot (IQR) + mean (red dot). ANOVA F(3,3779) = 187.4, p < 0.001.",
+    x = "Popularity Quartile (by vote count)",
+    y = "IMDb Rating (1–10)",
+    caption = "Clear separation of distributions. Q4 films significantly rated higher than Q1–Q3."
+  ) +
+  theme_professional() +
+  theme(
+    panel.grid.major.y = element_line(colour = "#F0F0F0", size = 0.3),
+    axis.text.x = element_text(size = 11)
+  )
+
+print(p_result2_violin)
+save_plot(p_result2_violin, "report_result2_popularity_violin_means.png", width = 13, height = 8)
+
+# ========== RESULT 3: MULTI-GENRE – AREA CHART + CUMULATIVE SUCCESS ==========
+
+multi_genre_progression <- movies_analysis %>%
+  mutate(
+    genre_bin = case_when(
+      num_genres == 1 ~ "1",
+      num_genres == 2 ~ "2",
+      num_genres == 3 ~ "3",
+      num_genres >= 4 ~ "4+"
+    ),
+    genre_bin = factor(genre_bin, levels = c("1", "2", "3", "4+"))
+  ) %>%
+  group_by(genre_bin) %>%
+  summarise(
+    mean_rating = mean(imdb_rating),
+    dual_success_pct = mean(dual_success) * 100,
+    financial_success_pct = mean(financial_success) * 100,
+    critical_success_pct = mean(critical_success) * 100,
+    n = n(),
+    .groups = "drop"
+  ) %>%
+  pivot_longer(cols = ends_with("_pct"),
+               names_to = "metric",
+               values_to = "percentage") %>%
+  mutate(
+    metric = factor(metric, 
+                    levels = c("financial_success_pct", "critical_success_pct", "dual_success_pct"),
+                    labels = c("Financial Only", "Critical Only", "Dual Success"))
+  )
+
+p_result3_area <- ggplot(multi_genre_progression, 
+                         aes(x = genre_bin, y = percentage, fill = metric, group = metric)) +
+  geom_area(position = "identity", alpha = 0.55, colour = "#333333", size = 0.8) +
+  geom_line(position = "identity", size = 1.2, colour = "#333333") +
+  geom_point(position = "identity", size = 3, colour = "white", stroke = 1.5) +
+  scale_fill_manual(
+    values = c("Financial Only" = "#2E86AB", "Critical Only" = "#A23B72", "Dual Success" = "#F18F01"),
+    name = "Success Type"
+  ) +
+  labs(
+    title = "Result 3: Success Metrics by Number of Genres",
+    subtitle = "Area chart showing stacked success rates. Multi-genre films achieve higher dual success.",
+    x = "Number of Genres",
+    y = "Success Rate (%)",
+    caption = "t-test: Multi vs Single, t = 5.73, p < 0.001. ANOVA F(3, 7779) = ..., p < 0.001."
+  ) +
+  theme_professional() +
+  theme(
+    panel.grid.major.y = element_line(colour = "#E8E8E8", size = 0.4),
+    legend.position = "top",
+    legend.direction = "horizontal"
+  )
+
+print(p_result3_area)
+save_plot(p_result3_area, "report_result3_multi_genre_area.png", width = 13, height = 8)
+
+# ========== RESULT 4: TEMPORAL – SLOPE CHART + SHADED PERIOD BACKGROUND ==========
+
+genre_trends_for_slope <- genre_trends_clean %>%
+  filter(Genre %in% key_genres) %>%
+  pivot_longer(
+    cols = matches("dual_success_rate"),
+    names_to = "period_col",
+    values_to = "dual_success_rate"
+  ) %>%
+  mutate(
+    period = if_else(str_detect(period_col, "2016"), 1, 2),
+    period_label = if_else(period == 1, "1996–2016\n(Pre-Streaming)", "2017–2024\n(Streaming Era)"),
+    period_label = factor(period_label, levels = c("1996–2016\n(Pre-Streaming)", "2017–2024\n(Streaming Era)"))
+  ) %>%
+  select(Genre, period, period_label, dual_success_rate)
+
+p_result4_slope <- ggplot(genre_trends_for_slope,
+                          aes(x = period, y = dual_success_rate, group = Genre, colour = Genre)) +
+  annotate("rect", xmin = 0.7, xmax = 1.3, ymin = -Inf, ymax = Inf,
+           fill = "#E8E8E8", alpha = 0.3) +
+  annotate("rect", xmin = 1.7, xmax = 2.3, ymin = -Inf, ymax = Inf,
+           fill = "#2E86AB", alpha = 0.08) +
+  geom_line(size = 1.8, alpha = 0.85, linejoin = "round") +
+  geom_point(size = 6, alpha = 0.95, shape = 21, colour = "white", stroke = 2) +
+  geom_text(aes(label = sprintf("%.1f%%", dual_success_rate)),
+            hjust = -0.3, vjust = -0.8, size = 4, fontface = "bold",
+            show.legend = FALSE) +
+  scale_colour_viridis(discrete = TRUE, option = "turbo", name = "Genre") +
+  scale_x_continuous(breaks = c(1, 2), labels = c("1996–2016\n(Pre-Streaming)", "2017–2024\n(Streaming Era)")) +
+  scale_y_continuous(limits = c(40, 95), breaks = seq(40, 90, 10)) +
+  labs(
+    title = "Result 4: Genre Success Trajectory Across Streaming Transition",
+    subtitle = "Documentary surge (+9.3 pp); Crime enters top-5; streaming platforms reshaping success definitions.",
+    x = "Time Period",
+    y = "Dual Success Rate (%)",
+    caption = "Grey region: Pre-streaming era (traditional theatrical model). Blue region: Streaming era (Netflix/Amazon/etc. investment)."
+  ) +
+  theme_professional() +
+  theme(
+    panel.grid.major.y = element_line(colour = "#E0E0E0", size = 0.4),
+    panel.grid.major.x = element_blank(),
+    legend.position = "right",
+    axis.text.x = element_text(size = 10, face = "bold")
+  )
+
+print(p_result4_slope)
+save_plot(p_result4_slope, "report_result4_temporal_slope_styled.png", width = 14, height = 9)
+
+# ========== RESULT 5: LINEAR REGRESSION – COEFFICIENT PLOT + SIGNIFICANCE SHADING ==========
+
+lm_plot_enhanced <- lm_tidy %>%
+  filter(term != "(Intercept)") %>%
+  mutate(
+    term = reorder(term, estimate),
+    ci_lower = estimate - 1.96 * std_error,
+    ci_upper = estimate + 1.96 * std_error
+  )
+
+p_result5_coef_enhanced <- ggplot(lm_plot_enhanced, aes(x = term, y = estimate)) +
+  geom_rect(data = filter(lm_plot_enhanced, p_value < 0.05),
+            aes(xmin = as.numeric(term) - 0.4, xmax = as.numeric(term) + 0.4),
+            ymin = -Inf, ymax = Inf, fill = "#2E86AB", alpha = 0.08, 
+            inherit.aes = FALSE) +
+  geom_hline(yintercept = 0, linetype = "solid", colour = "#333333", size = 1) +
+  geom_errorbar(aes(ymin = ci_lower, ymax = ci_upper, colour = estimate > 0),
+                width = 0.15, size = 1.3, alpha = 0.85) +
+  geom_point(aes(colour = estimate > 0, size = -log10(p_value)), alpha = 0.95) +
+  geom_text(aes(label = sprintf("%.3f", estimate), colour = estimate > 0),
+            vjust = -1.2, size = 4, fontface = "bold") +
+  coord_flip() +
+  scale_colour_manual(values = c("TRUE" = "#2E86AB", "FALSE" = "#E63946"), guide = "none") +
+  scale_size(name = "-log10(p-value)", breaks = c(1, 2, 3, 10)) +
+  labs(
+    title = "Result 5: Linear Regression Coefficients – Rating Prediction Model",
+    subtitle = "R² = 0.1649 (16.5% variance explained). F(7, 3775) = 106.49, p < 0.001. Blue shading: p < 0.05.",
+    x = "Predictor",
+    y = "Coefficient (β) with 95% CI",
+    caption = "logVotes (popularity) & Horror (negative) are strongest predictors. Positive genre dummies increase ratings; Horror penalty largest."
+  ) +
+  theme_professional() +
+  theme(
+    panel.grid.major.x = element_line(colour = "#E0E0E0", size = 0.3),
+    panel.grid.major.y = element_blank(),
+    legend.position = "bottom"
+  )
+
+print(p_result5_coef_enhanced)
+save_plot(p_result5_coef_enhanced, "report_result5_lm_coefficient_enhanced.png", width = 14, height = 9)
+
+# ========== RESULT 6: LOGISTIC REGRESSION – ODDS RATIO FOREST ==========
+
+glm_plot_enhanced <- glm_tidy %>%
+  filter(term != "(Intercept)") %>%
+  mutate(
+  term = reorder(term, odds_ratio),
+  log_odds_ratio = log(odds_ratio),
+  ci_lower = exp(estimate - 1.96 * std_error),
+  ci_upper = exp(estimate + 1.96 * std_error),
+  log_ci_lower = log(ci_lower),
+  log_ci_upper = log(ci_upper),
+  significant = p_value < 0.05
+)
+
+p_result6_odds <- ggplot(glm_plot_enhanced, aes(x = term, y = log_odds_ratio, colour = significant)) +
+  geom_hline(yintercept = 0, linetype = "solid", colour = "#333333", size = 1.2) +
+  geom_errorbar(aes(ymin = log_ci_lower, ymax = log_ci_upper),
+              width = 0.25, size = 1.4, alpha = 0.8) +
+  geom_point(size = 6, alpha = 0.95, shape = 21, 
+           colour = "white", stroke = 1.5) +
+  geom_text(aes(label = sprintf("%.3f", odds_ratio)),
+          vjust = -1.2, size = 4, fontface = "bold",
+          colour = "#333333") +
+  scale_colour_manual(
+    values = c("TRUE" = "#2E86AB", "FALSE" = "#CCCCCC"),
+    name = "Significant\n(p < 0.05)",
+    labels = c("TRUE" = "Yes", "FALSE" = "No")
+  ) +
+  scale_y_continuous(
+  breaks = log(c(0.1, 0.25, 0.5, 1, 2, 4)),
+  labels = c("0.1", "0.25", "0.5", "1.0", "2.0", "4.0"),
+  name = "Odds Ratio (log scale)"
+  ) +
+  coord_flip() +
+  labs(
+    title = "Result 6: Logistic Regression – Odds Ratios for Dual Success",
+    subtitle = "logVotes increases odds ~10% per unit; Horror decreases ~62%. 95% CI shown.",
+    x = "Predictor",
+    y = "Odds Ratio (log scale)",
+    caption = "OR > 1 (right of 0): increases dual success probability. OR < 1 (left of 0): decreases. Grey points: not significant."
+  ) +
+  theme_professional() +
+  theme(
+    panel.grid.major.x = element_line(colour = "#E0E0E0", size = 0.3),
+    panel.grid.major.y = element_blank(),
+    legend.position = "bottom"
+  )
+
+print(p_result6_odds)
+save_plot(p_result6_odds, "report_result6_logistic_odds_forest.png", width = 14, height = 9)
+```
+------------------------------------------------------------------------

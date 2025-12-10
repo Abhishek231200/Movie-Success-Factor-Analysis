@@ -1,0 +1,5 @@
+votes_group,N_Movies,Mean_Rating,SD_Rating,Dual_Success_Rate
+Q1 (Low),8376,5.83,1.3,46.4
+Q2 (Med-Low),8375,5.99,1.25,51.6
+Q3 (Med-High),8375,6.15,1.15,54.8
+Q4 (High),8375,6.48,1.01,66.8
