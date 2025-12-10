@@ -89,7 +89,7 @@ Key Coefficients:
 
 ## Dataset
 
-- **Total films analyzed:** 3,783 movies (1996-2024) with complete data
+- **Total films analyzed:** 7,783 movies (1996-2024) with complete data
 - **Mean rating:** 6.24/10 (SD = 1.14)
 - **Median revenue:** $53.3 million
 - **Mean revenue:** $131.5 million
@@ -134,41 +134,6 @@ We chose classical statistics over machine learning for three reasons:
 
 ---
 
-## Project Structure
-
-```
-movie_success_analysis/
-├── README.md                              # This file
-├── src/
-│   ├── movie_analysis_qmd.qmd            # Main analysis script (Quarto/R Markdown)
-│   ├── data/
-│   │   ├── raw/                          # Place downloaded IMDb files here
-│   │   │   ├── name.basics.tsv.gz
-│   │   │   ├── title.basics.tsv.gz
-│   │   │   ├── title.principals.tsv.gz
-│   │   │   └── title.ratings.tsv.gz
-│   │   └── processed/
-│   │       └── movies_analysis.csv       # Cleaned data with features
-│   └── LICENSE
-├── results/
-│   ├── preliminary/
-│   │   └── exploratory_stats.txt
-│   └── final/
-│       ├── regression_coefficients.csv
-│       ├── model_diagnostics.txt
-│       └── session_info.txt
-└── figures/
-    ├── 01_rating_distribution.png        # Histogram of IMDb ratings
-    ├── 02_revenue_distribution.png       # Log-scale revenue distribution
-    ├── 03_success_by_genre.png           # Dual success by genre
-    ├── 04_rating_vs_revenue.png          # Scatter plot with LOESS trend
-    ├── 05_temporal_trends.png            # Trends 1996-2016 vs 2017-2024
-    ├── 06_regression_coefficients.png    # Model coefficient plot
-    └── 07_correlation_heatmap.png        # Correlation matrix
-```
-
----
-
 ## Running the Analysis
 
 ### Requirements
@@ -176,32 +141,7 @@ movie_success_analysis/
 - **Required packages:** tidyverse, ggplot2, gridExtra, scales, corrplot, FactoMineR, car, lmtest
 - **Optional:** Quarto (for rendering Quarto documents)
 
-### Installation
-
-```R
-# Install required packages
-packages <- c("tidyverse", "ggplot2", "gridExtra", "scales", 
-              "corrplot", "FactoMineR", "car", "lmtest")
-install.packages(packages)
-```
-
-### Execution
-
-```R
-# Option 1: Source the main script directly
-source("src/movie_analysis_qmd.qmd")
-
-# Option 2: Render as Quarto document (if using Quarto)
-quarto::quarto_render("src/movie_analysis_qmd.qmd")
-```
-
-**Expected output:**
-- 7 publication-ready figures saved to `figures/`
-- Processed data saved to `data/processed/movies_analysis.csv`
-- Statistical results saved to `results/final/`
-- **Runtime:** 5-10 minutes on modern hardware
-
----
+___
 
 ## Key Findings Summary
 
@@ -214,33 +154,6 @@ quarto::quarto_render("src/movie_analysis_qmd.qmd")
 - Documentary films surged 9.3 percentage points in importance (2017-2024)
 - Budget has minimal correlation with ratings (r=0.14)
 - Horror films systematically penalized (-0.97 rating penalty)
-
----
-
-## Limitations
-
-1. **Budget Estimation:** We estimated budgets as 30% of revenue due to missing data. This is systematic but introduces measurement error.
-
-2. **Selection Bias:** Box Office Mojo includes only theatrical releases. Streaming-first films (Netflix, Disney+) and independent films are underrepresented.
-
-3. **U.S.-Centric:** IMDb and Box Office data dominated by U.S./Hollywood market. Findings may not generalize to international cinema (Bollywood, Chinese, European).
-
-4. **Causality:** Our models identify predictors, not causal mechanisms. Does Drama cause ratings, or do great writers choose drama?
-
-5. **Unmeasured Variables:** Marketing spend, critic reviews, awards buzz, release timing, and cultural moments all influence success but aren't in our dataset.
-
-6. **Temporal Confounding:** The 2017-2024 period includes COVID-19 pandemic disruption. Future work should isolate pandemic effects.
-
----
-
-## Future Research Directions
-
-1. **Sentiment Analysis:** Apply NLP to user reviews for thematic content beyond genre
-2. **Franchise Effects:** Isolate sequels and shared universes (MCU, DCEU) separately
-3. **Streaming vs. Theatrical:** Compare success factors for streaming-first films
-4. **International Comparison:** Replicate for Bollywood (Douban) and Chinese cinema
-5. **Pandemic Deep Dive:** Separately analyze 2020-2021 disruption period
-6. **Predictive Modeling:** Use pre-release features (cast, director, budget, marketing)
 
 ---
 
@@ -269,25 +182,4 @@ If you use this analysis in your work, please cite:
 }
 ```
 
----
 
-## References
-
-1. Gao, Z., Malic, V., Ma, S., & Shih, P. (2019). How to Make a Successful Movie: Factor Analysis from Both Financial and Critical Perspectives. *Proceedings of iConference 2019*, LNCS 11420, 669-678.
-
-2. Box Office Mojo. (2024). Annual Box Office Reports. Retrieved from https://www.boxofficemojo.com/year/
-
-3. IMDb. (2024). IMDb Datasets. Retrieved from https://datasets.imdbws.com/
-
-4. The Movie Database (TMDb). (2024). API Documentation. Retrieved from https://www.themoviedb.org/settings/api
-
----
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
----
-
-**Last Updated:** December 9, 2024  
-**Status:** Complete and ready for publication
