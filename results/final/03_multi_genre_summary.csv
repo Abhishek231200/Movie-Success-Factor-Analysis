@@ -1,0 +1,5 @@
+genre_count_group,N_Movies,Mean_Rating,SD_Rating,Dual_Success_Rate
+Single,1288,6.41,1.26,58.9
+Two,2494,6.43,1.07,58.1
+Three,3994,6.25,1.05,49.1
+NA,7,6.46,2.04,71.4
